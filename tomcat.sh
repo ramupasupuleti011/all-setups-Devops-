@@ -1,70 +1,56 @@
 #!/bin/bash
-
-# Exit on error
 set -e
 
-echo "Updating system..."
-if command -v dnf >/dev/null 2>&1; then
-    sudo dnf update -y
-    sudo dnf install java-17-amazon-corretto wget unzip -y
+echo "===== Updating system ====="
+sudo dnf update -y
+
+echo "===== Installing Java ====="
+sudo dnf install -y java-11-amazon-corretto wget tar
+
+echo "===== Creating tomcat user ====="
+if id "tomcat" &>/dev/null; then
+    echo "Tomcat user exists"
 else
-    sudo yum update -y
-    sudo yum install java-17-openjdk wget unzip -y
+    sudo useradd -m -d /opt/tomcat -s /bin/false tomcat
 fi
 
-echo "Installing PostgreSQL..."
-if command -v dnf >/dev/null 2>&1; then
-    sudo dnf install postgresql15-server postgresql15 -y
-    sudo postgresql-setup --initdb
-else
-    sudo amazon-linux-extras enable postgresql14
-    sudo yum install postgresql-server postgresql-contrib -y
-    sudo postgresql-setup initdb
-fi
+echo "===== Downloading Tomcat (stable archive link) ====="
+cd /opt
+sudo wget -q https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.87/bin/apache-tomcat-9.0.87.tar.gz -O tomcat.tar.gz
 
-sudo systemctl start postgresql
-sudo systemctl enable postgresql
+echo "===== Extracting ====="
+sudo tar -xzf tomcat.tar.gz
+sudo mv apache-tomcat-9.0.87 tomcat
 
-echo "Setting up SonarQube database..."
-sudo -u postgres psql <<EOF
-CREATE USER sonar WITH ENCRYPTED PASSWORD 'sonar';
-CREATE DATABASE sonarqube OWNER sonar;
-GRANT ALL PRIVILEGES ON DATABASE sonarqube TO sonar;
+echo "===== Setting permissions ====="
+sudo chown -R tomcat:tomcat /opt/tomcat
+sudo chmod -R 755 /opt/tomcat
+
+echo "===== Configuring Tomcat users ====="
+sudo tee /opt/tomcat/conf/tomcat-users.xml > /dev/null <<EOF
+<tomcat-users>
+  <role rolename="manager-gui"/>
+  <role rolename="manager-script"/>
+  <user username="tomcat" password="ramu123" roles="manager-gui,manager-script"/>
+</tomcat-users>
 EOF
 
-echo "Creating sonar user..."
-sudo useradd sonar || true
-sudo mkdir -p /opt/sonarqube
+echo "===== Enabling remote access (manager app) ====="
+sudo sed -i '/RemoteAddrValve/d' /opt/tomcat/webapps/manager/META-INF/context.xml
+sudo sed -i '/RemoteAddrValve/d' /opt/tomcat/webapps/host-manager/META-INF/context.xml
 
-echo "Downloading SonarQube..."
-cd /opt
-sudo wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-9.9.3.79811.zip
-sudo unzip sonarqube-9.9.3.79811.zip
-sudo mv sonarqube-9.9.3.79811 sonarqube
-sudo chown -R sonar:sonar /opt/sonarqube
+echo "===== Starting Tomcat ====="
+sudo su -s /bin/bash tomcat -c "/opt/tomcat/bin/startup.sh"
 
-echo "Configuring SonarQube..."
-sudo bash -c 'cat > /opt/sonarqube/conf/sonar.properties <<EOL
-sonar.jdbc.username=sonar
-sonar.jdbc.password=sonar
-sonar.jdbc.url=jdbc:postgresql://localhost:5432/sonarqube
-sonar.web.host=0.0.0.0
-sonar.web.port=9000
-EOL'
+echo "===== Waiting for startup ====="
+sleep 10
 
-echo "Updating system limits..."
-sudo bash -c 'cat >> /etc/sysctl.conf <<EOL
-vm.max_map_count=262144
-fs.file-max=65536
-EOL'
+echo "===== Verifying Tomcat ====="
+ps -ef | grep tomcat | grep -v grep
 
-sudo sysctl -p
-
-echo "Starting SonarQube..."
-sudo su - sonar -c "/opt/sonarqube/bin/linux-x86-64/sonar.sh start"
-
-echo "======================================"
-echo "SonarQube installed successfully!"
-echo "Access URL: http://<EC2-PUBLIC-IP>:9000"
-echo "Default login: admin / admin"
-echo "======================================"
+echo "===== SUCCESS ====="
+echo "Open in browser:"
+echo "http://<EC2-PUBLIC-IP>:8080"
+echo "Manager:"
+echo "http://<EC2-PUBLIC-IP>:8080/manager/html"
+echo "Login: tomcat / ramu123"
